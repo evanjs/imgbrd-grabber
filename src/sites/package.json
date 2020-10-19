@@ -1,5 +1,6 @@
 {
     "name": "sites",
+    "version": "7.3.2",
     "description": "Grabber site files",
     "repository": {
         "type": "git",

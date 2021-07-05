@@ -127,6 +127,13 @@ void FavoritesTab::updateFavorites()
 
 	clearLayout(m_favoritesLayout);
 
+	if (m_favorites.isEmpty()) {
+		ui->labelFavorites->setText(tr("You don't have any favorite yet."));
+		ui->labelFavorites->show();
+	} else {
+		ui->labelFavorites->hide();
+	}
+
 	QString display = m_settings->value("favorites_display", "ind").toString();
 	const qreal upscale = m_settings->value("thumbnailUpscale", 1.0).toDouble();
 	const int borderSize = m_settings->value("borders", 3).toInt();
@@ -263,7 +270,7 @@ void FavoritesTab::getAll()
 		const int highLimit = page->highLimit();
 		const int currentCount = page->pageImageCount();
 		const int imageCount = page->imagesCount() >= 0 ? page->imagesCount() : page->maxImagesCount();
-		const int total = imageCount > 0 ? qMax(currentCount, imageCount) : (highLimit > 0 ? highLimit : currentCount);
+		const int total = imageCount > 0 ? qMax(currentCount, imageCount) : -1;
 		const int perPage = highLimit > 0 ? (imageCount > 0 ? qMin(highLimit, imageCount) : highLimit) : currentCount;
 		if ((perPage == 0 && total == 0) || (currentCount == 0 && imageCount <= 0)) {
 			continue;

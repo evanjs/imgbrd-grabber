@@ -12,6 +12,7 @@
 #include <utility>
 #include "commands/commands.h"
 #include "downloader/download-query-manager.h"
+#include "exiftool.h"
 #include "functions.h"
 #include "logger.h"
 #include "models/favorite.h"
@@ -24,20 +25,20 @@
 
 
 Profile::Profile()
-	: m_settings(nullptr), m_commands(nullptr), m_md5s(nullptr), m_monitorManager(nullptr), m_downloadQueryManager(nullptr), m_urlDownloaderManager(nullptr)
+	: m_settings(nullptr), m_commands(nullptr), m_exiftool(nullptr), m_md5s(nullptr), m_monitorManager(nullptr), m_downloadQueryManager(nullptr), m_urlDownloaderManager(nullptr)
 {}
 Profile::Profile(QSettings *settings, QList<Favorite> favorites, QStringList keptForLater, QString path)
-	: m_path(std::move(path)), m_settings(settings), m_favorites(std::move(favorites)), m_keptForLater(std::move(keptForLater)), m_commands(nullptr), m_md5s(nullptr), m_monitorManager(nullptr), m_downloadQueryManager(nullptr), m_urlDownloaderManager(nullptr)
+	: m_path(std::move(path)), m_settings(settings), m_favorites(std::move(favorites)), m_keptForLater(std::move(keptForLater)), m_commands(nullptr), m_exiftool(nullptr), m_md5s(nullptr), m_monitorManager(nullptr), m_downloadQueryManager(nullptr), m_urlDownloaderManager(nullptr)
 {}
 Profile::Profile(QString path)
-	: m_path(std::move(path))
+	: m_path(std::move(path)), m_urlDownloaderManager(nullptr)
 {
 	m_settings = new QSettings(m_path + "/settings.ini", QSettings::IniFormat);
 
 	// Load sources
 	QStringList dirs = QDir(m_path + "/sites/").entryList(QDir::Dirs | QDir::NoDotAndDotDot);
 	for (const QString &dir : dirs) {
-		Source *source = new Source(this, m_path + "/sites/" + dir);
+		auto *source = new Source(this, m_path + "/sites/" + dir);
 		if (source->getApis().isEmpty()) {
 			source->deleteLater();
 			continue;
@@ -70,10 +71,10 @@ Profile::Profile(QString path)
 	} else {
 		QFile fileFavorites(m_path + "/favorites.txt");
 		if (fileFavorites.open(QFile::ReadOnly | QFile::Text)) {
-			QString favs = fileFavorites.readAll();
+			QString favorites = fileFavorites.readAll();
 			fileFavorites.close();
 
-			QStringList words = favs.split("\n", Qt::SkipEmptyParts);
+			QStringList words = favorites.split("\n", Qt::SkipEmptyParts);
 			m_favorites.reserve(words.count());
 			for (const QString &word : words) {
 				Favorite fav = Favorite::fromString(m_path, word);
@@ -139,6 +140,7 @@ Profile::Profile(QString path)
 	}
 
 	m_commands = new Commands(this);
+	m_exiftool = new Exiftool(this);
 
 	// Blacklisted tags
 	const QStringList &blacklist = m_settings->value("blacklistedtags").toString().split(' ', Qt::SkipEmptyParts);
@@ -192,6 +194,10 @@ Profile::~Profile()
 	delete m_monitorManager;
 	delete m_downloadQueryManager;
 	// delete m_urlDownloaderManager;
+
+	if (m_exiftool != nullptr) {
+		m_exiftool->stop();
+	}
 }
 
 
@@ -278,7 +284,7 @@ void Profile::syncBlacklist() const
 
 QString Profile::tempPath() const
 {
-	const QString override = m_settings->value("tempPathOverride", "").toString();
+	QString override = m_settings->value("tempPathOverride", "").toString();
 	if (!override.isEmpty() && QFile::exists(override)) {
 		return override;
 	}
@@ -468,7 +474,7 @@ void Profile::setBlacklistedTags(const Blacklist &blacklist)
 
 void Profile::addBlacklistedTag(const QString &tag)
 {
-	m_blacklist.add(tag);
+	m_blacklist.add(QString(tag).replace(":", "::"));
 
 	syncBlacklist();
 	emit blacklistChanged();
@@ -490,6 +496,7 @@ QStringList &Profile::getKeptForLater() { return m_keptForLater; }
 QStringList &Profile::getIgnored() { return m_ignored; }
 TagFilterList &Profile::getRemovedTags() { return m_removedTags; }
 Commands &Profile::getCommands() { return *m_commands; }
+Exiftool &Profile::getExiftool() { return *m_exiftool; }
 QStringList &Profile::getAutoComplete() { return m_autoComplete; }
 Blacklist &Profile::getBlacklist() { return m_blacklist; }
 const QMap<QString, Source*> &Profile::getSources() const { return m_sources; }
@@ -506,6 +513,8 @@ QList<Site*> Profile::getFilteredSites(const QStringList &urls) const
 	for (const QString &url : urls) {
 		if (m_sites.contains(url)) {
 			ret.append(m_sites.value(url));
+		} else {
+			log(QStringLiteral("Unknown site: %1").arg(url), Logger::Error);
 		}
 	}
 	return ret;

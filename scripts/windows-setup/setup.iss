@@ -22,7 +22,7 @@
 #endif
 
 #ifndef MyAppVersion
-# define MyAppVersion "7.4.3"
+# define MyAppVersion "7.6.0"
 #endif
 
 #ifndef QtApngDll
@@ -65,44 +65,28 @@ PrivilegesRequired=admin
 ArchitecturesAllowed=x86 x64 ia64
 ArchitecturesInstallIn64BitMode=x64 ia64
 
-; downloading and installing dependencies will only work if the memo/ready page is enabled (default and current behaviour)
-DisableReadyPage=no
-DisableReadyMemo=no
+; Dependencies
+#define UseMsiProductCheck
+#define UseVC2015To2019
+#include "scripts\dependencies.iss"
 
+[Languages]
+Name: en; MessagesFile: "compiler:Default.isl"  
+Name: nl; MessagesFile: "compiler:Languages\Dutch.isl" 
+Name: fr; MessagesFile: "compiler:Languages\French.isl"    
+Name: de; MessagesFile: "compiler:Languages\German.isl"   
+Name: ru; MessagesFile: "compiler:Languages\Russian.isl"   
+Name: es; MessagesFile: "compiler:Languages\Spanish.isl" 
 
 [CustomMessages]
 en.IGL=Imageboard-Grabber Links
 fr.IGL=Liens Imageboard-Grabber
-DependenciesDir=MyProgramDependencies
-WindowsServicePack=Windows %1 Service Pack %2
 
 [Registry]
 Root: HKCR; Subkey: ".igl"; ValueType: string; ValueName: ""; ValueData: "Imageboard-Grabber"; Flags: uninsdeletevalue
 Root: HKCR; Subkey: "Imageboard-Grabber"; ValueType: string; ValueName: ""; ValueData: "{cm:IGL}"; Flags: uninsdeletekey
 Root: HKCR; Subkey: "Imageboard-Grabber\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"
 Root: HKCR; Subkey: "Imageboard-Grabber\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
-
-; Languages
-#include "scripts\lang\english.iss"
-#include "scripts\lang\german.iss"
-#include "scripts\lang\french.iss"
-#include "scripts\lang\italian.iss"
-#include "scripts\lang\dutch.iss"
-
-#ifdef UNICODE
-#include "scripts\lang\chinese.iss"
-#include "scripts\lang\polish.iss"
-#include "scripts\lang\russian.iss"
-#include "scripts\lang\japanese.iss"
-#endif
-
-#include "scripts\products.iss"
-#include "scripts\products\stringversion.iss"
-#include "scripts\products\winversion.iss"
-#include "scripts\products\fileversion.iss"
-#include "scripts\products\msiproduct.iss"
-#include "scripts\products\vcredist2015.iss"
-#include "scripts\products\vcredist2017.iss"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
@@ -129,6 +113,7 @@ Source: "{#QtDir}\Qt5Gui.dll";                  DestDir: "{app}"; Flags: ignorev
 Source: "{#QtDir}\Qt5Multimedia.dll";           DestDir: "{app}"; Flags: ignoreversion
 Source: "{#QtDir}\Qt5MultimediaWidgets.dll";    DestDir: "{app}"; Flags: ignoreversion
 Source: "{#QtDir}\Qt5Network.dll";              DestDir: "{app}"; Flags: ignoreversion
+Source: "{#QtDir}\Qt5NetworkAuth.dll";          DestDir: "{app}"; Flags: ignoreversion
 Source: "{#QtDir}\Qt5OpenGL.dll";               DestDir: "{app}"; Flags: ignoreversion
 Source: "{#QtDir}\Qt5PrintSupport.dll";         DestDir: "{app}"; Flags: ignoreversion
 Source: "{#QtDir}\Qt5Qml.dll";                  DestDir: "{app}"; Flags: ignoreversion
@@ -270,6 +255,8 @@ Type: files; Name: "{app}\imageformats\qsvg4.dll"
 Type: files; Name: "{app}\imageformats\qtga4.dll"
 Type: files; Name: "{app}\imageformats\qtiff4.dll"
 Type: files; Name: "{app}\sqldrivers\qsqlmysql4.dll"
+Type: files; Name: "{app}\mediaservice\dsengine.dll"
+Type: files; Name: "{app}\mediaservice\wmfengine.dll"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{%UserProfile}\Grabber"
@@ -284,16 +271,6 @@ Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#MyAppName}"; Fil
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, "&", "&&")}}"; Flags: nowait postinstall skipifsilent
 
 [Code]
-function InitializeSetup(): Boolean;
-begin
-  initwinversion();
-
-  vcredist2015('14');
-  vcredist2017('14');
-
-  Result := true;
-end;
-
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then

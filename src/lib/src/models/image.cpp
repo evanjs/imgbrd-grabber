@@ -11,6 +11,7 @@
 #include <utility>
 #include "commands/commands.h"
 #include "downloader/extension-rotator.h"
+#include "exiftool.h"
 #include "favorite.h"
 #include "filtering/tag-filter-list.h"
 #include "functions.h"
@@ -28,6 +29,9 @@
 #include "tags/tag-database.h"
 #include "tags/tag-stylist.h"
 #include "tags/tag-type.h"
+#ifdef WIN_FILE_PROPS
+	#include "windows-file-property.h"
+#endif
 
 #define MAX_LOAD_FILESIZE (1024 * 1024 * 50)
 
@@ -266,17 +270,18 @@ void Image::write(QJsonObject &json) const
 	}
 
 	// Tags
-	QStringList tags;
-	tags.reserve(m_tags.count());
+	QJsonArray tags;
 	for (const Tag &tag : m_tags) {
-		tags.append(tag.text());
+		QJsonObject jsonTag;
+		tag.write(jsonTag);
+		tags.append(jsonTag);
 	}
 
 	// FIXME: real serialization
 	json["name"] = m_name;
 	json["id"] = QString::number(m_id);
 	json["md5"] = m_md5;
-	json["tags"] = QJsonArray::fromStringList(tags);
+	json["tags"] = tags;
 	json["url"] = m_url.toString();
 	json["search"] = QJsonArray::fromStringList(m_search);
 
@@ -296,6 +301,7 @@ bool Image::read(const QJsonObject &json, const QMap<QString, Site*> &sites)
 {
 	const QString site = json["website"].toString();
 	if (!sites.contains(site)) {
+		log(QStringLiteral("Unknown site: %1").arg(site), Logger::Warning);
 		return false;
 	}
 
@@ -327,8 +333,15 @@ bool Image::read(const QJsonObject &json, const QMap<QString, Site*> &sites)
 	// Tags
 	QJsonArray jsonTags = json["tags"].toArray();
 	m_tags.reserve(jsonTags.count());
-	for (const auto &tag : jsonTags) {
-		m_tags.append(Tag(tag.toString()));
+	for (const auto &jsonTag : jsonTags) {
+		if (jsonTag.isString()) {
+			m_tags.append(Tag(jsonTag.toString()));
+		} else {
+			Tag tag;
+			if (tag.read(jsonTag.toObject())) {
+				m_tags.append(tag);
+			}
+		}
 	}
 
 	// Search
@@ -377,7 +390,7 @@ void Image::loadDetails(bool rateLimit)
 	}
 
 	if (m_loadedDetails || m_pageUrl.isEmpty()) {
-		emit finishedLoadingTags();
+		emit finishedLoadingTags(LoadTagsResult::Ok);
 		return;
 	}
 
@@ -425,13 +438,23 @@ void Image::parseDetails()
 		return;
 	}
 
+	// Detect Cloudflare
+	if ((statusCode == 403 || statusCode == 429 || statusCode == 503) && m_loadDetails->rawHeader("server") == "cloudflare") {
+		log(QStringLiteral("Cloudflare wall for '%1'").arg(m_pageUrl.toString()), Logger::Error);
+		m_loadDetails->deleteLater();
+		m_loadDetails = nullptr;
+		emit finishedLoadingTags(LoadTagsResult::CloudflareError);
+		return;
+	}
+
 	// Aborted or connection error
 	if (m_loadDetails->error()) {
 		if (m_loadDetails->error() != NetworkReply::NetworkError::OperationCanceledError) {
-			log(QStringLiteral("Loading error for '%1': %2").arg(m_pageUrl.toString(), m_loadDetails->errorString()), Logger::Error);
+			log(QStringLiteral("Loading details error for '%1': %2").arg(m_pageUrl.toString(), m_loadDetails->errorString()), Logger::Error);
 		}
 		m_loadDetails->deleteLater();
 		m_loadDetails = nullptr;
+		emit finishedLoadingTags(LoadTagsResult::NetworkError);
 		return;
 	}
 
@@ -448,7 +471,9 @@ void Image::parseDetails()
 	if (!ret.error.isEmpty()) {
 		auto logLevel = m_detailsParsWarnAsErr ? Logger::Error : Logger::Warning;
 		log(QStringLiteral("[%1][%2] %3").arg(m_parentSite->url(), api->getName(), ret.error), logLevel);
-		emit finishedLoadingTags();
+		m_loadDetails->deleteLater();
+		m_loadDetails = nullptr;
+		emit finishedLoadingTags(LoadTagsResult::Error);
 		return;
 	}
 
@@ -488,7 +513,7 @@ void Image::parseDetails()
 
 	refreshTokens();
 
-	emit finishedLoadingTags();
+	emit finishedLoadingTags(LoadTagsResult::Ok);
 }
 
 /**
@@ -527,7 +552,9 @@ Image::SaveResult Image::save(const QString &path, Size size, bool force, bool b
 
 	QFile f(path);
 	if (!f.exists() || force) {
-		const QPair<QString, QString> md5action = m_profile->md5Action(md5(), path);
+		const QPair<QString, QString> md5action = size != Size::Thumbnail
+			? m_profile->md5Action(md5(), path)
+			: QPair<QString, QString>("save", "");
 		const QString &whatToDo = md5action.first;
 		const QString &md5Duplicate = md5action.second;
 
@@ -649,6 +676,38 @@ void Image::postSaving(const QString &path, Size size, bool addMd5, bool startCo
 	}
 	if (startCommands) {
 		commands.after();
+	}
+
+	// Metadata
+	const QString &ext = extension();
+	#ifdef WIN_FILE_PROPS
+		const QStringList exts = m_settings->value("Save/MetadataPropsysExtensions", "jpg jpeg mp4").toString().split(' ', Qt::SkipEmptyParts);
+		if (exts.isEmpty() || exts.contains(ext)) {
+			const auto metadataPropsys = getMetadataPropsys(m_settings);
+			for (const auto &pair : metadataPropsys) {
+				const QStringList values = Filename(pair.second).path(*this, m_profile, "", 0, Filename::Complex);
+				if (!values.isEmpty()) {
+					setWindowsProperty(path, pair.first, values.first());
+				}
+			}
+		}
+	#endif
+	const QStringList exiftoolExts = m_settings->value("Save/MetadataExiftoolExtensions", "jpg jpeg png gif mp4").toString().split(' ', Qt::SkipEmptyParts);
+	if (exiftoolExts.isEmpty() || exiftoolExts.contains(ext)) {
+		QMap<QString, QString> metadata;
+		const auto metadataExiftool = getMetadataExiftool(m_settings);
+		for (const auto &pair : metadataExiftool) {
+			const QStringList values = Filename(pair.second).path(*this, m_profile, "", 0, Filename::Complex);
+			if (!values.isEmpty()) {
+				metadata.insert(pair.first, values.first());
+			}
+		}
+
+		if (!metadata.isEmpty()) {
+			Exiftool &exiftool = m_profile->getExiftool();
+			exiftool.start();
+			exiftool.setMetadata(path, metadata);
+		}
 	}
 
 	setSavePath(path, size);
@@ -820,7 +879,7 @@ QString Image::tooltip() const
 		.arg(author.isEmpty() ? " " : tr("<b>User:</b> %1<br/><br/>").arg(author))
 		.arg(width() == 0 || height() == 0 ? " " : tr("<b>Size:</b> %1 x %2<br/>").arg(QString::number(width()), QString::number(height())))
 		.arg(m_sizes[Image::Size::Full]->fileSize == 0 ? " " : tr("<b>Filesize:</b> %1 %2<br/>").arg(QString::number(size), unit))
-		.arg(!createdAt.isValid() ? " " : tr("<b>Date:</b> %1").arg(createdAt.toString(Qt::DefaultLocaleShortDate)));
+		.arg(!createdAt.isValid() ? " " : tr("<b>Date:</b> %1").arg(createdAt.toLocalTime().toString(Qt::DefaultLocaleShortDate)));
 }
 
 QString Image::counter() const
@@ -853,7 +912,7 @@ QList<QStrP> Image::detailsData() const
 		QStrP(tr("Score"), token<QString>("score")),
 		QStrP(tr("Author"), !author.isEmpty() ? author : unknown),
 		QStrP(),
-		QStrP(tr("Date"), createdAt.isValid() ? createdAt.toString(Qt::DefaultLocaleShortDate) : unknown),
+		QStrP(tr("Date"), createdAt.isValid() ? createdAt.toLocalTime().toString(Qt::DefaultLocaleShortDate) : unknown),
 		QStrP(tr("Size"), !size().isEmpty() ? QString::number(width()) + "x" + QString::number(height()) : unknown),
 		QStrP(tr("Filesize"), m_sizes[Image::Size::Full]->fileSize != 0 ? formatFilesize(m_sizes[Image::Size::Full]->fileSize) : unknown),
 		QStrP(),

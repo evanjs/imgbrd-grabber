@@ -3,6 +3,7 @@
 
 #include <QMap>
 #include <QString>
+#include <QKeySequence>
 #include "backports/backports.h"
 
 
@@ -62,6 +63,9 @@ QList<ConditionalFilename> getFilenames(QSettings *settings);
 QMap<int, QMap<QString, QVariant>> getExternalLogFiles(QSettings *settings);
 QStringList getExternalLogFilesSuffixes(QSettings *settings);
 
+QList<QPair<QString, QString>> getMetadataPropsys(QSettings *settings);
+QList<QPair<QString, QString>> getMetadataExiftool(QSettings *settings);
+
 QStringList removeWildards(const QStringList &elements, const QStringList &remove);
 QString getExtensionFromHeader(const QByteArray &data12);
 
@@ -86,6 +90,9 @@ QUrl removeCacheBuster(QUrl url);
 
 bool canCreateLinkType(const QString &type, const QString &dir);
 bool createLink(const QString &from, const QString &to, const QString &type);
+
+QKeySequence getKeySequence(QSettings *settings, const QString &key, QKeySequence::StandardKey standardDefault, const QKeySequence &altDefault);
+QKeySequence getKeySequence(QSettings *settings, const QString &key, const QKeySequence &def);
 
 
 

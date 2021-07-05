@@ -5,15 +5,18 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFontDialog>
+#include <QFutureWatcher>
 #include <QNetworkProxy>
 #include <QRegularExpression>
 #include <QSignalMapper>
 #include <QSqlDatabase>
 #include <QStandardItem>
 #include <QStandardItemModel>
+#include <QtConcurrent>
 #include <ui_options-window.h>
 #include <algorithm>
 #include "analytics.h"
+#include "exiftool.h"
 #include "functions.h"
 #include "filename/conditional-filename.h"
 #include "helpers.h"
@@ -22,6 +25,7 @@
 #include "models/profile.h"
 #include "models/site.h"
 #include "reverse-search/reverse-search-loader.h"
+#include "search-syntax-highlighter.h"
 #include "settings/condition-window.h"
 #include "settings/custom-window.h"
 #include "settings/filename-window.h"
@@ -41,7 +45,7 @@ void disableItem(QComboBox *combo, const int index, const QString &toolTip) {
 }
 
 OptionsWindow::OptionsWindow(Profile *profile, QWidget *parent)
-	: OptionsWindow(profile, new ThemeLoader(savePath("themes/", true, false), this), parent)
+	: OptionsWindow(profile, new ThemeLoader(savePath("themes/", true, false), parent), parent)
 {}
 
 OptionsWindow::OptionsWindow(Profile *profile, ThemeLoader *themeLoader, QWidget *parent)
@@ -53,6 +57,7 @@ OptionsWindow::OptionsWindow(Profile *profile, ThemeLoader *themeLoader, QWidget
 	ui->setupUi(this);
 
 	QSettings *settings = profile->getSettings();
+	setupDialogShortcuts(this, settings);
 
 	ui->splitter->setSizes({ 160, ui->stackedWidget->sizeHint().width() });
 	ui->splitter->setStretchFactor(0, 0);
@@ -123,6 +128,46 @@ OptionsWindow::OptionsWindow(Profile *profile, ThemeLoader *themeLoader, QWidget
 	const QStringList ftypes { "ind", "in", "id", "nd", "i", "n", "d" };
 	ui->comboFavoritesDisplay->setCurrentIndex(ftypes.indexOf(settings->value("favorites_display", "ind").toString()));
 
+	ui->keyAcceptDialogue->setKeySequence(getKeySequence(settings, "keyAcceptDialog", Qt::CTRL + Qt::Key_Y));
+	ui->keyDeclineDialogue->setKeySequence(getKeySequence(settings, "keyDeclineDialog", Qt::CTRL + Qt::Key_N));
+
+	// Metadata using Windows Property System
+	#ifndef WIN_FILE_PROPS
+		ui->groupMetadataPropsys->setEnabled(false);
+	#else
+		ui->lineMetadataPropsysExtensions->setText(settings->value("Save/MetadataPropsysExtensions", "jpg jpeg mp4").toString());
+		const QList<QPair<QString, QString>> metadataPropsys = getMetadataPropsys(settings);
+		for (const auto &pair : metadataPropsys) {
+			auto *leKey = new QLineEdit(pair.first, this);
+			auto *leValue = new QLineEdit(pair.second, this);
+			ui->layoutMetadataPropsys->addRow(leKey, leValue);
+			m_metadataPropsys.append(QPair<QLineEdit*, QLineEdit*> { leKey, leValue });
+		}
+	#endif
+
+	// Metadata using Exiftool
+	QFuture<QString> future = QtConcurrent::run([=]() {
+		return Exiftool::version();
+	});
+	auto *watcher = new QFutureWatcher<QString>(this);
+	connect(watcher, &QFutureWatcher<QString>::finished, [=]() {
+		const QString &version = future.result();
+		ui->labelMetadataExiftoolVersion->setText(version.isEmpty() ? tr("exiftool not found") : version);
+		if (version.isEmpty()) {
+			ui->labelMetadataExiftoolVersion->setStyleSheet("color: red");
+		}
+	});
+	watcher->setFuture(future);
+
+	ui->lineMetadataExiftoolExtensions->setText(settings->value("Save/MetadataExiftoolExtensions", "jpg jpeg png gif mp4").toString());
+	const QList<QPair<QString, QString>> metadataExiftool = getMetadataExiftool(settings);
+	for (const auto &pair : metadataExiftool) {
+		auto *leKey = new QLineEdit(pair.first, this);
+		auto *leValue = new QLineEdit(pair.second, this);
+		ui->layoutMetadataExiftool->addRow(leKey, leValue);
+		m_metadataExiftool.append(QPair<QLineEdit*, QLineEdit*> { leKey, leValue });
+	}
+
 	// Log
 	settings->beginGroup("Log");
 		ui->checkShowLog->setChecked(settings->value("show", true).toBool());
@@ -131,6 +176,7 @@ OptionsWindow::OptionsWindow(Profile *profile, ThemeLoader *themeLoader, QWidget
 	// Blacklist
 	ui->textBlacklist->setPlainText(profile->getBlacklist().toString());
 	ui->checkDownloadBlacklisted->setChecked(settings->value("downloadblacklist", false).toBool());
+	new SearchSyntaxHighlighter(false, ui->textBlacklist->document());
 
 	// Ignored tags
 	ui->textRemovedTags->setPlainText(settings->value("ignoredtags").toString());
@@ -215,7 +261,7 @@ OptionsWindow::OptionsWindow(Profile *profile, ThemeLoader *themeLoader, QWidget
 
 
 		// Build the "tags" settings
-		auto tagsTree = ui->treeWidget->invisibleRootItem()->child(2)->child(4);
+		auto tagsTree = ui->treeWidget->invisibleRootItem()->child(2)->child(5);
 		tagsTree->addChild(new QTreeWidgetItem({ "Artist" }, tagsTree->type()));
 		tagsTree->addChild(new QTreeWidgetItem({ "Copyright" }, tagsTree->type()));
 		tagsTree->addChild(new QTreeWidgetItem({ "Character" }, tagsTree->type()));
@@ -231,7 +277,7 @@ OptionsWindow::OptionsWindow(Profile *profile, ThemeLoader *themeLoader, QWidget
 		m_tokenSettings.append(new TokenSettingsWidget(settings, "species", false, "unknown", "multiple", this));
 		m_tokenSettings.append(new TokenSettingsWidget(settings, "meta", false, "none", "multiple", this));
 		for (int i = 0; i < m_tokenSettings.count(); ++i) {
-			ui->stackedWidget->insertWidget(i + 8, m_tokenSettings[i]);
+			ui->stackedWidget->insertWidget(i + 9, m_tokenSettings[i]);
 		}
 
 		ui->spinLimit->setValue(settings->value("limit", 0).toInt());
@@ -263,6 +309,17 @@ OptionsWindow::OptionsWindow(Profile *profile, ThemeLoader *themeLoader, QWidget
 	ui->comboTagsPosition->setCurrentIndex(positions.indexOf(settings->value("tagsposition", "top").toString()));
 	ui->spinPreload->setValue(settings->value("preload", 0).toInt());
 	ui->spinSlideshow->setValue(settings->value("slideshow", 0).toInt());
+
+	settings->beginGroup("Main/Shortcuts");
+		ui->keyMainQuit->setKeySequence(getKeySequence(settings, "keyQuit", QKeySequence::Quit, Qt::CTRL + Qt::Key_Q));
+		ui->keyMainFocusSearch->setKeySequence(getKeySequence(settings, "keyFocusSearch", Qt::CTRL + Qt::Key_L));
+		ui->keyMainCloseTab->setKeySequence(getKeySequence(settings, "keyCloseTab", Qt::CTRL + Qt::Key_W));
+		ui->keyMainNewTab->setKeySequence(getKeySequence(settings, "keyNewTab", QKeySequence::AddTab, Qt::CTRL + Qt::Key_T));
+		ui->keyMainPrevTab->setKeySequence(getKeySequence(settings, "keyPrevTab", Qt::CTRL + Qt::Key_PageDown));
+		ui->keyMainNextTab->setKeySequence(getKeySequence(settings, "keyNextTab", Qt::CTRL + Qt::Key_PageUp));
+		ui->keyMainBrowseSave->setKeySequence(getKeySequence(settings, "keyBrowseSave", QKeySequence::Open, Qt::CTRL + Qt::Key_O));
+	settings->endGroup();
+
 	ui->checkResultsScrollArea->setChecked(settings->value("resultsScrollArea", true).toBool());
 	ui->checkResultsFixedWidthLayout->setChecked(settings->value("resultsFixedWidthLayout", false).toBool());
 	ui->checkImageCloseMiddleClick->setChecked(settings->value("imageCloseMiddleClick", true).toBool());
@@ -271,6 +328,8 @@ OptionsWindow::OptionsWindow(Profile *profile, ThemeLoader *themeLoader, QWidget
 	ui->checkZoomViewSamples->setChecked(settings->value("Zoom/viewSamples", false).toBool());
 	ui->checkImageScaleUp->setChecked(settings->value("Zoom/scaleUp", false).toBool());
 	ui->checkImageUseVideoPlayer->setChecked(settings->value("Zoom/useVideoPlayer", true).toBool());
+	ui->checkImageVideoControls->setChecked(settings->value("Zoom/showVideoPlayerControls", true).toBool());
+	ui->checkImageGifControls->setChecked(settings->value("Zoom/showGifPlayerControls", true).toBool());
 	const QStringList imageTagOrder { "type", "name", "count" };
 	ui->comboImageTagOrder->setCurrentIndex(imageTagOrder.indexOf(settings->value("Zoom/tagOrder", "type").toString()));
 	const QStringList positionsV { "top", "center", "bottom" };
@@ -282,6 +341,23 @@ OptionsWindow::OptionsWindow(Profile *profile, ThemeLoader *themeLoader, QWidget
 	ui->comboImagePositionVideoV->setCurrentIndex(positionsV.indexOf(settings->value("imagePositionVideoV", "center").toString()));
 	ui->comboImagePositionVideoH->setCurrentIndex(positionsH.indexOf(settings->value("imagePositionVideoH", "left").toString()));
 	ui->lineImageBackgroundColor->setText(settings->value("imageBackgroundColor", QString()).toString());
+
+	settings->beginGroup("Zoom/Shortcuts");
+		ui->keyViewerQuit->setKeySequence(getKeySequence(settings, "keyQuit", Qt::Key_Escape));
+		ui->keyViewerPrev->setKeySequence(getKeySequence(settings, "keyPrev", Qt::Key_Left));
+		ui->keyViewerNext->setKeySequence(getKeySequence(settings, "keyNext", Qt::Key_Right));
+		ui->keyViewerDetails->setKeySequence(getKeySequence(settings, "keyDetails", Qt::Key_D));
+		ui->keyViewerSaveAs->setKeySequence(getKeySequence(settings, "keySaveAs", QKeySequence::SaveAs, Qt::CTRL + Qt::SHIFT + Qt::Key_S));
+		ui->keyViewerSave->setKeySequence(getKeySequence(settings, "keySave", QKeySequence::Save, Qt::CTRL + Qt::Key_S));
+		ui->keyViewerSaveNQuit->setKeySequence(getKeySequence(settings, "keySaveNQuit", Qt::CTRL + Qt::Key_W));
+		ui->keyViewerOpen->setKeySequence(getKeySequence(settings, "keyOpen", Qt::CTRL + Qt::Key_O));
+		ui->keyViewerSaveFav->setKeySequence(getKeySequence(settings, "keySaveFav", Qt::CTRL + Qt::ALT + Qt::Key_S));
+		ui->keyViewerSaveNQuitFav->setKeySequence(getKeySequence(settings, "keySaveNQuitFav", Qt::CTRL + Qt::ALT + Qt::Key_W));
+		ui->keyViewerOpenFav->setKeySequence(getKeySequence(settings, "keyOpenFav", Qt::CTRL + Qt::ALT + Qt::Key_O));
+		ui->keyViewerToggleSlideshow->setKeySequence(getKeySequence(settings, "keyToggleSlideshow", Qt::Key_Space));
+		ui->keyViewerToggleFullscreen->setKeySequence(getKeySequence(settings, "keyToggleFullscreen", QKeySequence::FullScreen, Qt::Key_F11));
+		ui->keyViewerDataToClipboard->setKeySequence(getKeySequence(settings, "keyDataToClipboard", QKeySequence::Copy, Qt::CTRL + Qt::Key_C));
+	settings->endGroup();
 
 	settings->beginGroup("Coloring");
 		settings->beginGroup("Colors");
@@ -391,12 +467,14 @@ void OptionsWindow::on_buttonFilenamePlus_clicked()
 {
 	FilenameWindow *fw = new FilenameWindow(m_profile, ui->lineFilename->text(), this);
 	connect(fw, &FilenameWindow::validated, ui->lineFilename, &QLineEdit::setText);
+	setupDialogShortcuts(fw, m_profile->getSettings());
 	fw->show();
 }
 void OptionsWindow::on_buttonFavoritesPlus_clicked()
 {
 	FilenameWindow *fw = new FilenameWindow(m_profile, ui->lineFavorites->text(), this);
 	connect(fw, &FilenameWindow::validated, ui->lineFavorites, &QLineEdit::setText);
+	setupDialogShortcuts(fw, m_profile->getSettings());
 	fw->show();
 }
 
@@ -404,6 +482,7 @@ void OptionsWindow::on_buttonCustom_clicked()
 {
 	auto *cw = new CustomWindow(this);
 	connect(cw, &CustomWindow::validated, this, &OptionsWindow::addCustom);
+	setupDialogShortcuts(cw, m_profile->getSettings());
 	cw->show();
 }
 void OptionsWindow::addCustom(const QString &name, const QString &tags)
@@ -418,6 +497,7 @@ void OptionsWindow::on_buttonFilenames_clicked()
 {
 	auto *cw = new ConditionWindow();
 	connect(cw, &ConditionWindow::validated, this, &OptionsWindow::addFilename);
+	setupDialogShortcuts(cw, m_profile->getSettings());
 	cw->show();
 }
 void OptionsWindow::addFilename(const QString &condition, const QString &filename, const QString &folder)
@@ -435,6 +515,23 @@ void OptionsWindow::addFilename(const QString &condition, const QString &filenam
 	layout->addWidget(leFilename);
 	layout->addWidget(leFolder);
 	ui->layoutConditionals->addLayout(layout);
+}
+
+
+void OptionsWindow::on_buttonMetadataPropsysAdd_clicked()
+{
+	auto *leKey = new QLineEdit(this);
+	auto *leValue = new QLineEdit(this);
+	ui->layoutMetadataPropsys->addRow(leKey, leValue);
+	m_metadataPropsys.append(QPair<QLineEdit*, QLineEdit*> { leKey, leValue });
+}
+
+void OptionsWindow::on_buttonMetadataExiftoolAdd_clicked()
+{
+	auto *leKey = new QLineEdit(this);
+	auto *leValue = new QLineEdit(this);
+	ui->layoutMetadataExiftool->addRow(leKey, leValue);
+	m_metadataExiftool.append(QPair<QLineEdit*, QLineEdit*> { leKey, leValue });
 }
 
 
@@ -471,6 +568,7 @@ void OptionsWindow::addLogFile()
 {
 	auto *logWindow = new LogWindow(-1, m_profile, this);
 	connect(logWindow, &LogWindow::validated, this, &OptionsWindow::setLogFile);
+	setupDialogShortcuts(logWindow, m_profile->getSettings());
 	logWindow->show();
 }
 
@@ -478,6 +576,7 @@ void OptionsWindow::editLogFile(int index)
 {
 	auto *logWindow = new LogWindow(index, m_profile, this);
 	connect(logWindow, &LogWindow::validated, this, &OptionsWindow::setLogFile);
+	setupDialogShortcuts(logWindow, m_profile->getSettings());
 	logWindow->show();
 }
 
@@ -581,6 +680,7 @@ void OptionsWindow::addWebService()
 {
 	auto *wsWindow = new WebServiceWindow(nullptr, this);
 	connect(wsWindow, &WebServiceWindow::validated, this, &OptionsWindow::setWebService);
+	setupDialogShortcuts(wsWindow, m_profile->getSettings());
 	wsWindow->show();
 }
 
@@ -589,6 +689,7 @@ void OptionsWindow::editWebService(int id)
 	int pos = m_webServicesIds[id];
 	auto *wsWindow = new WebServiceWindow(&m_webServices[pos], this);
 	connect(wsWindow, &WebServiceWindow::validated, this, &OptionsWindow::setWebService);
+	setupDialogShortcuts(wsWindow, m_profile->getSettings());
 	wsWindow->show();
 }
 
@@ -894,6 +995,9 @@ void OptionsWindow::save()
 		m_profile->emitFavorite();
 	}
 
+	settings->setValue("keyAcceptDialog", ui->keyAcceptDialogue->keySequence().toString());
+	settings->setValue("keyDeclineDialog", ui->keyDeclineDialogue->keySequence().toString());
+
 	// Log
 	settings->beginGroup("Log");
 		settings->setValue("show", ui->checkShowLog->isChecked());
@@ -995,6 +1099,34 @@ void OptionsWindow::save()
 			tokenSettings->save();
 		}
 
+		settings->setValue("MetadataPropsysExtensions", ui->lineMetadataPropsysExtensions->text());
+		settings->beginWriteArray("MetadataPropsys");
+		for (int i = 0, j = 0; i < m_metadataPropsys.count(); ++i) {
+			const QString &key = m_metadataPropsys[i].first->text();
+			const QString &value = m_metadataPropsys[i].second->text();
+			if (!key.isEmpty() && !value.isEmpty()) {
+				settings->setArrayIndex(j);
+				settings->setValue("key", key);
+				settings->setValue("value", value);
+				++j;
+			}
+		}
+		settings->endArray();
+
+		settings->setValue("MetadataExiftoolExtensions", ui->lineMetadataExiftoolExtensions->text());
+		settings->beginWriteArray("MetadataExiftool");
+		for (int i = 0, j = 0; i < m_metadataExiftool.count(); ++i) {
+			const QString &key = m_metadataExiftool[i].first->text();
+			const QString &value = m_metadataExiftool[i].second->text();
+			if (!key.isEmpty() && !value.isEmpty()) {
+				settings->setArrayIndex(j);
+				settings->setValue("key", key);
+				settings->setValue("value", value);
+				++j;
+			}
+		}
+		settings->endArray();
+
 		settings->setValue("limit", ui->spinLimit->value());
 		settings->setValue("simultaneous", ui->spinSimultaneous->value());
 		settings->beginGroup("Customs");
@@ -1035,6 +1167,17 @@ void OptionsWindow::save()
 	settings->setValue("tagsposition", positions.at(ui->comboTagsPosition->currentIndex()));
 	settings->setValue("preload", ui->spinPreload->value());
 	settings->setValue("slideshow", ui->spinSlideshow->value());
+
+	settings->beginGroup("Main/Shortcuts");
+		settings->setValue("keyQuit", ui->keyMainQuit->keySequence().toString());
+		settings->setValue("keyFocusSearch", ui->keyMainFocusSearch->keySequence().toString());
+		settings->setValue("keyCloseTab", ui->keyMainCloseTab->keySequence().toString());
+		settings->setValue("keyNewTab", ui->keyMainNewTab->keySequence().toString());
+		settings->setValue("keyPrevTab", ui->keyMainPrevTab->keySequence().toString());
+		settings->setValue("keyNextTab", ui->keyMainNextTab->keySequence().toString());
+		settings->setValue("keyBrowseSave", ui->keyMainBrowseSave->keySequence().toString());
+	settings->endGroup();
+
 	settings->setValue("resultsScrollArea", ui->checkResultsScrollArea->isChecked());
 	settings->setValue("resultsFixedWidthLayout", ui->checkResultsFixedWidthLayout->isChecked());
 	settings->setValue("imageCloseMiddleClick", ui->checkImageCloseMiddleClick->isChecked());
@@ -1043,6 +1186,8 @@ void OptionsWindow::save()
 	settings->setValue("Zoom/viewSamples", ui->checkZoomViewSamples->isChecked());
 	settings->setValue("Zoom/scaleUp", ui->checkImageScaleUp->isChecked());
 	settings->setValue("Zoom/useVideoPlayer", ui->checkImageUseVideoPlayer->isChecked());
+	settings->setValue("Zoom/showVideoPlayerControls", ui->checkImageVideoControls->isChecked());
+	settings->setValue("Zoom/showGifPlayerControls", ui->checkImageGifControls->isChecked());
 	const QStringList imageTagOrder { "type", "name", "count" };
 	settings->setValue("Zoom/tagOrder", imageTagOrder.at(ui->comboImageTagOrder->currentIndex()));
 	const QStringList positionsV { "top", "center", "bottom" };
@@ -1054,6 +1199,23 @@ void OptionsWindow::save()
 	settings->setValue("imagePositionVideoV", positionsV.at(ui->comboImagePositionVideoV->currentIndex()));
 	settings->setValue("imagePositionVideoH", positionsH.at(ui->comboImagePositionVideoH->currentIndex()));
 	settings->setValue("imageBackgroundColor", ui->lineImageBackgroundColor->text());
+
+	settings->beginGroup("Zoom/Shortcuts");
+		settings->setValue("keyQuit", ui->keyViewerQuit->keySequence().toString());
+		settings->setValue("keyPrev", ui->keyViewerPrev->keySequence().toString());
+		settings->setValue("keyNext", ui->keyViewerNext->keySequence().toString());
+		settings->setValue("keyDetails", ui->keyViewerDetails->keySequence().toString());
+		settings->setValue("keySaveAs", ui->keyViewerSaveAs->keySequence().toString());
+		settings->setValue("keySave", ui->keyViewerSave->keySequence().toString());
+		settings->setValue("keySaveNQuit", ui->keyViewerSaveNQuit->keySequence().toString());
+		settings->setValue("keyOpen", ui->keyViewerOpen->keySequence().toString());
+		settings->setValue("keySaveFav", ui->keyViewerSaveFav->keySequence().toString());
+		settings->setValue("keySaveNQuitFav", ui->keyViewerSaveNQuitFav->keySequence().toString());
+		settings->setValue("keyOpenFav", ui->keyViewerOpenFav->keySequence().toString());
+		settings->setValue("keyToggleSlideshow", ui->keyViewerToggleSlideshow->keySequence().toString());
+		settings->setValue("keyToggleFullscreen", ui->keyViewerToggleFullscreen->keySequence().toString());
+		settings->setValue("keyDataToClipboard", ui->keyViewerDataToClipboard->keySequence().toString());
+	settings->endGroup();
 
 	settings->beginGroup("Coloring");
 		settings->beginGroup("Colors");
@@ -1150,9 +1312,11 @@ void OptionsWindow::save()
 	}
 
 	const QString lang = ui->comboLanguages->currentData().toString();
-	if (settings->value("language", "English").toString() != lang) {
+	const bool useSystemLocale = ui->checkUseSystemLocale->isChecked();
+	if (settings->value("language", "English").toString() != lang || settings->value("useSystemLocale", true).toString() != useSystemLocale) {
 		settings->setValue("language", lang);
-		emit languageChanged(lang);
+		settings->setValue("useSystemLocale", useSystemLocale);
+		emit languageChanged(lang, useSystemLocale);
 	}
 
 	m_profile->sync();

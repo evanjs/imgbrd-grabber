@@ -194,6 +194,30 @@ QStringList getExternalLogFilesSuffixes(QSettings *settings)
 	return suffixes;
 }
 
+QList<QPair<QString, QString>> getMetadata(QSettings *settings, const QString &key)
+{
+	QList<QPair<QString, QString>> ret;
+
+	const int size = settings->beginReadArray(key);
+	for (int i = 0; i < size; ++i) {
+		settings->setArrayIndex(i);
+		const QString key = settings->value("key").toString();
+		const QString value = settings->value("value").toString();
+		ret.append(QPair<QString, QString> { key, value });
+	}
+	settings->endArray();
+
+	return ret;
+}
+QList<QPair<QString, QString>> getMetadataPropsys(QSettings *settings)
+{
+	return getMetadata(settings, "Save/MetadataPropsys");
+}
+QList<QPair<QString, QString>> getMetadataExiftool(QSettings *settings)
+{
+	return getMetadata(settings, "Save/MetadataExiftool");
+}
+
 QStringList removeWildards(const QStringList &elements, const QStringList &remove)
 {
 	QStringList tags;
@@ -613,6 +637,7 @@ QString fixFilenameLinux(const QString &fn, const QString &path, int maxLength, 
 
 	// Fix parameters
 	const QString sep = QStringLiteral("/");
+	maxLength = maxLength == 0 ? 255 : maxLength;
 	QString filename = path + fn;
 
 	// Divide filename
@@ -632,14 +657,13 @@ QString fixFilenameLinux(const QString &fn, const QString &path, int maxLength, 
 		cutStringToUtf8Bytes(part, 255);
 	}
 
-	// Join parts back
-	QString dirpart = parts.join(sep);
-	filename = (dirpart.isEmpty() ? QString() : dirpart + (!fn.isEmpty() ? sep : QString())) + file;
-
 	// A filename cannot exceed 255 bytes
 	const int extlen = ext.isEmpty() ? 0 : ext.length() + 1;
 	cutStringToUtf8Bytes(file, maxLength - extlen);
-	cutStringToUtf8Bytes(file, 255 - extlen);
+
+	// Join parts back
+	QString dirpart = parts.join(sep);
+	filename = (dirpart.isEmpty() ? QString() : dirpart + (!fn.isEmpty() ? sep : QString())) + file;
 
 	// Get separation between filename and path
 	int index = -1;
@@ -1093,4 +1117,23 @@ bool createLink(const QString &from, const QString &to, const QString &type)
 	#endif
 	log(QStringLiteral("Invalid link type '%1'").arg(type), Logger::Error);
 	return false;
+}
+
+
+QKeySequence getKeySequence(QSettings *settings, const QString &key, QKeySequence::StandardKey standardDefault, const QKeySequence &altDefault)
+{
+	const auto standards = QKeySequence::keyBindings(standardDefault);
+	if (standards.isEmpty()) {
+		return getKeySequence(settings, key, altDefault);
+	}
+	return getKeySequence(settings, key, standards.first());
+}
+
+QKeySequence getKeySequence(QSettings *settings, const QString &key, const QKeySequence &def)
+{
+	QString val = settings->value(key).toString();
+	if (val.isEmpty()) {
+		return def;
+	}
+	return QKeySequence(val);
 }

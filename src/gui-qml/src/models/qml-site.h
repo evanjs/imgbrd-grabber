@@ -14,7 +14,7 @@ class QmlSite : public QObject
 
 	Q_PROPERTY(QString url READ url CONSTANT)
 	Q_PROPERTY(QString name READ name CONSTANT)
-	Q_PROPERTY(Settings* settings READ settings CONSTANT)
+	Q_PROPERTY(Settings * settings READ settings CONSTANT)
 	Q_PROPERTY(QList<QmlAuth*> authFields READ authFields CONSTANT)
 
 	public:
@@ -31,6 +31,7 @@ class QmlSite : public QObject
 		QString name() const { return m_site->name(); }
 		Settings *settings() const { return m_settings; }
 		QList<QmlAuth*> authFields() const { return m_fields; }
+		bool remove() { return m_site->remove(); }
 
 	private:
 		Site *m_site;

@@ -26,7 +26,11 @@
 
 #include <QApplication>
 #include <QDir>
+#include <QEventLoop>
 #include <QMap>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QSettings>
 #include <QSslSocket>
 #include <QString>
@@ -47,14 +51,35 @@
 	#include "android.h"
 #endif
 
+#ifdef WIN_FILE_PROPS
+	#include "windows-file-property.h"
+#endif
+
 
 int main(int argc, char *argv[])
 {
+	#ifdef WIN_FILE_PROPS
+		initializeWindowsProperties();
+	#endif
+
 	QApplication app(argc, argv);
 	app.setApplicationName("Grabber");
 	app.setApplicationVersion(VERSION);
 	app.setOrganizationName("Bionus");
 	app.setOrganizationDomain("bionus.fr.cr");
+
+	// Handler for custom URL protocols, redirecting to the main program through HTTP calls
+	if (argc == 3 && QString(argv[1]) == "--url-protocol") {
+		QNetworkAccessManager manager;
+		QNetworkRequest request(QUrl("http://127.0.0.1:58923/" + QString(argv[2])));
+
+		QEventLoop loop;
+		QObject::connect(&manager, &QNetworkAccessManager::finished, &loop, &QEventLoop::quit);
+		manager.get(request);
+		loop.exec();
+
+		return 0;
+	}
 
 	qRegisterMetaType<PageApi::LoadResult>("LoadResult");
 
